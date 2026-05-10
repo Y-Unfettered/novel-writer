@@ -1,0 +1,23 @@
+# 小说管理 - 包含私有小说内容，不上传
+小说管理/
+
+# 迭代备份 - 可能包含小说相关内容
+backups/
+
+# Claude Code 本地设置
+.claude/
+
+# node_modules - 通过 npm install 安装，不上传
+node_modules/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+npm-debug.log*
+
+# 临时文件
+*.tmp
+*.temp
