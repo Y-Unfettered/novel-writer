@@ -11,6 +11,8 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const types_1 = require("./types");
 const utils_1 = require("./utils");
+const CREATURE_CATEGORIES = ['神话异兽', '野兽', '虫类', '禽类', '鳞类', '植株'];
+const EMPTY_TEXT = '(暂无)';
 class ProjectManager {
     async createNewProject(title, author, rootPath, basicSetting) {
         const now = Date.now();
@@ -33,13 +35,14 @@ class ProjectManager {
         await (0, utils_1.ensureDir)(path_1.default.join(rootPath, 'planning'));
         await (0, utils_1.ensureDir)(path_1.default.join(rootPath, 'references', 'raw'));
         await (0, utils_1.ensureDir)(path_1.default.join(rootPath, 'references', 'cards'));
+        await this.createCreatureDirectories(rootPath);
         await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'global-summary.md'), this.buildInitialGlobalSummary(title, basicSetting));
         await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'characters', '人物关系.md'), this.buildInitialCharacterRelationships());
         await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'characters', 'cards', 'README.md'), this.buildInitialCharacterCardGuide());
         await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'planning', 'timeline.md'), this.buildInitialTimeline());
         const chapterPlanEntries = this.buildInitialChapterPlanEntries();
+        await this.saveChapterPlanEntries(project, chapterPlanEntries);
         await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'planning', 'chapter-plan.md'), this.renderChapterPlanMarkdown(chapterPlanEntries));
-        await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'planning', 'chapter-plan.json'), JSON.stringify(chapterPlanEntries, null, 2) + '\n');
         await (0, utils_1.writeFile)(path_1.default.join(rootPath, 'references', 'cards', 'README.md'), this.buildInitialStyleReferenceGuide());
         await this.saveProject(project);
         return project;
@@ -82,17 +85,12 @@ class ProjectManager {
             project.chapters.sort((a, b) => a.number - b.number);
         }
         project.totalChapters = project.chapters.length;
-        if (chapterNumber > project.currentChapter) {
-            project.currentChapter = chapterNumber;
-        }
+        project.currentChapter = Math.max(project.currentChapter, chapterNumber);
         await this.saveProject(project);
         return chapterInfo;
     }
     async saveChapterDraft(project, chapterNumber, chapterTitle, content) {
-        const formattedNum = (0, utils_1.formatChapterNumber)(chapterNumber);
-        const draftsDir = path_1.default.join(project.rootPath, 'chapters', 'drafts');
-        const draftPath = path_1.default.join(draftsDir, `${formattedNum}-draft.md`);
-        await (0, utils_1.ensureDir)(draftsDir);
+        const draftPath = path_1.default.join(project.rootPath, 'chapters', 'drafts', `${(0, utils_1.formatChapterNumber)(chapterNumber)}-draft.md`);
         await (0, utils_1.writeFile)(draftPath, this.wrapChapterContent(chapterNumber, chapterTitle, content));
         return draftPath;
     }
@@ -106,35 +104,31 @@ class ProjectManager {
         return (0, utils_1.readFile)(chapter.summaryPath);
     }
     async saveChapterSummary(chapter, summary) {
-        await (0, utils_1.writeFile)(chapter.summaryPath, summary);
+        await (0, utils_1.writeFile)(chapter.summaryPath, summary.trim() + '\n');
     }
     async readGlobalSummary(project) {
-        const filePath = path_1.default.join(project.rootPath, 'global-summary.md');
-        return fs_1.default.existsSync(filePath) ? (0, utils_1.readFile)(filePath) : '';
+        return this.readOptionalFile(path_1.default.join(project.rootPath, 'global-summary.md'));
     }
     async saveGlobalSummary(project, summary) {
-        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'global-summary.md'), summary);
+        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'global-summary.md'), summary.trim() + '\n');
     }
     async readCharacterRelationships(project) {
-        const filePath = path_1.default.join(project.rootPath, 'characters', '人物关系.md');
-        return fs_1.default.existsSync(filePath) ? (0, utils_1.readFile)(filePath) : '';
+        return this.readOptionalFile(path_1.default.join(project.rootPath, 'characters', '人物关系.md'));
     }
     async saveCharacterRelationships(project, content) {
-        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'characters', '人物关系.md'), content);
+        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'characters', '人物关系.md'), content.trim() + '\n');
     }
     async readTimeline(project) {
-        const filePath = path_1.default.join(project.rootPath, 'planning', 'timeline.md');
-        return fs_1.default.existsSync(filePath) ? (0, utils_1.readFile)(filePath) : '';
+        return this.readOptionalFile(path_1.default.join(project.rootPath, 'planning', 'timeline.md'));
     }
     async saveTimeline(project, content) {
-        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'planning', 'timeline.md'), content);
+        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'planning', 'timeline.md'), content.trim() + '\n');
     }
     async readChapterPlan(project) {
-        const filePath = path_1.default.join(project.rootPath, 'planning', 'chapter-plan.md');
-        return fs_1.default.existsSync(filePath) ? (0, utils_1.readFile)(filePath) : '';
+        return this.readOptionalFile(path_1.default.join(project.rootPath, 'planning', 'chapter-plan.md'));
     }
     async saveChapterPlan(project, content) {
-        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'planning', 'chapter-plan.md'), content);
+        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'planning', 'chapter-plan.md'), content.trim() + '\n');
         const parsedEntries = this.parseChapterPlanMarkdown(content);
         if (parsedEntries.length > 0) {
             await this.saveChapterPlanEntries(project, parsedEntries);
@@ -155,8 +149,7 @@ class ProjectManager {
         await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'planning', 'chapter-plan.md'), this.renderChapterPlanMarkdown(entries));
     }
     async saveCharacterCard(project, name, content) {
-        const fileName = `${this.sanitizeFileName(name)}.md`;
-        const filePath = path_1.default.join(project.rootPath, 'characters', 'cards', fileName);
+        const filePath = path_1.default.join(project.rootPath, 'characters', 'cards', `${this.sanitizeFileName(name)}.md`);
         await (0, utils_1.writeFile)(filePath, this.wrapCharacterCardContent(name, content));
         return filePath;
     }
@@ -183,14 +176,12 @@ class ProjectManager {
         return cards;
     }
     async saveStyleReferenceRaw(project, category, name, content) {
-        const fileName = this.buildStyleReferenceFileName(category, name);
-        const filePath = path_1.default.join(project.rootPath, 'references', 'raw', fileName);
+        const filePath = path_1.default.join(project.rootPath, 'references', 'raw', this.buildStyleReferenceFileName(category, name));
         await (0, utils_1.writeFile)(filePath, this.wrapStyleReferenceContent(category, name, content));
         return filePath;
     }
     async saveStyleReferenceCard(project, category, name, content) {
-        const fileName = this.buildStyleReferenceFileName(category, name);
-        const filePath = path_1.default.join(project.rootPath, 'references', 'cards', fileName);
+        const filePath = path_1.default.join(project.rootPath, 'references', 'cards', this.buildStyleReferenceFileName(category, name));
         await (0, utils_1.writeFile)(filePath, this.wrapStyleReferenceContent(category, name, content));
         return filePath;
     }
@@ -199,7 +190,7 @@ class ProjectManager {
         const safeLabel = label?.trim() ? `-${this.sanitizeFileName(label.trim())}` : '';
         const snapshotRoot = path_1.default.join(project.rootPath, 'snapshots', `${timestamp}${safeLabel}`);
         await (0, utils_1.ensureDir)(snapshotRoot);
-        const targets = ['novel.json', 'global-summary.md', 'chapters', 'characters', 'planning', 'references'];
+        const targets = ['novel.json', 'global-summary.md', 'chapters', 'characters', 'planning', 'references', 'creatures'];
         for (const target of targets) {
             const sourcePath = path_1.default.join(project.rootPath, target);
             if (!fs_1.default.existsSync(sourcePath)) {
@@ -216,6 +207,91 @@ class ProjectManager {
     async readStyleReferenceRawMaterials(project) {
         return this.readStyleReferenceDirectory(path_1.default.join(project.rootPath, 'references', 'raw'), false);
     }
+    async saveCreatureCard(project, name, category, content, dangerLevel = '中') {
+        const filePath = path_1.default.join(project.rootPath, 'creatures', category, `${this.sanitizeFileName(name)}.md`);
+        await (0, utils_1.writeFile)(filePath, this.wrapCreatureCardContent(name, category, content, dangerLevel));
+        return filePath;
+    }
+    async saveCreatureCardFromObject(project, category, name, card) {
+        const filePath = path_1.default.join(project.rootPath, 'creatures', category, `${this.sanitizeFileName(name)}.md`);
+        const content = this.renderCreatureCardMarkdown(card);
+        await (0, utils_1.writeFile)(filePath, this.wrapCreatureCardContent(card.name, card.category, content, card.baseDangerLevel));
+        return filePath;
+    }
+    async readCreatureCard(project, category, name) {
+        const filePath = path_1.default.join(project.rootPath, 'creatures', category, `${this.sanitizeFileName(name)}.md`);
+        if (!fs_1.default.existsSync(filePath)) {
+            return null;
+        }
+        const rawContent = await (0, utils_1.readFile)(filePath);
+        return this.parseCreatureCardContent(rawContent);
+    }
+    async readCreatureCards(project, category) {
+        return this.readCreatureCardDirectory(path_1.default.join(project.rootPath, 'creatures', category));
+    }
+    async readAllCreatureCards(project) {
+        const cards = [];
+        for (const category of await this.readCreatureCategories(project)) {
+            const categoryCards = await this.readCreatureCards(project, category);
+            for (const card of categoryCards) {
+                cards.push({ category, ...card });
+            }
+        }
+        return cards;
+    }
+    async readCreatureCategories(project) {
+        const creaturesRoot = path_1.default.join(project.rootPath, 'creatures');
+        if (!fs_1.default.existsSync(creaturesRoot)) {
+            return [];
+        }
+        const entries = await fs_1.default.promises.readdir(creaturesRoot, { withFileTypes: true });
+        return entries
+            .filter(entry => entry.isDirectory() && CREATURE_CATEGORIES.includes(entry.name))
+            .map(entry => entry.name)
+            .sort((a, b) => CREATURE_CATEGORIES.indexOf(a) - CREATURE_CATEGORIES.indexOf(b));
+    }
+    async updateCreatureDangerLevel(project, category, name, chapterNumber, dangerLevel, threatLevel, protagonistStatus, note) {
+        const card = await this.readCreatureCard(project, category, name);
+        if (!card) {
+            return;
+        }
+        const historyEntry = {
+            chapterNumber,
+            dangerLevel,
+            threatLevel,
+            protagonistStatus,
+            note,
+        };
+        const existingIndex = card.dangerLevelHistory.findIndex(entry => entry.chapterNumber === chapterNumber);
+        if (existingIndex >= 0) {
+            card.dangerLevelHistory[existingIndex] = historyEntry;
+        }
+        else {
+            card.dangerLevelHistory.push(historyEntry);
+            card.dangerLevelHistory.sort((a, b) => a.chapterNumber - b.chapterNumber);
+        }
+        await this.saveCreatureCardFromObject(project, category, name, card);
+    }
+    async appendCreatureChapterRecord(project, category, name, chapterNumber, chapterTitle, record) {
+        const card = await this.readCreatureCard(project, category, name);
+        if (!card) {
+            return;
+        }
+        const recordEntry = `第${chapterNumber}章${chapterTitle ? ` ${chapterTitle}` : ''}：${record}`;
+        if (!card.chapterRecords.includes(recordEntry)) {
+            card.chapterRecords.push(recordEntry);
+        }
+        await this.saveCreatureCardFromObject(project, category, name, card);
+    }
+    async findCreatureCard(project, name) {
+        for (const category of await this.readCreatureCategories(project)) {
+            const card = await this.readCreatureCard(project, category, name);
+            if (card) {
+                return { category, card };
+            }
+        }
+        return null;
+    }
     getChapter(project, number) {
         return project.chapters.find(chapter => chapter.number === number);
     }
@@ -229,81 +305,89 @@ class ProjectManager {
         }
         return sorted.slice(-n);
     }
+    buildDefaultCreatureCard(name, category, firstAppearance, baseDangerLevel) {
+        return {
+            name,
+            category,
+            firstAppearance,
+            baseDangerLevel,
+            appearance: { size: '', features: '', colors: '', specialMarks: '' },
+            abilities: { attack: '', defense: '', special: '', weakness: '' },
+            ecology: { habitat: '', activityPattern: '', diet: '', socialBehavior: '' },
+            utility: { edible: '', material: '', medicinal: '', other: '' },
+            distribution: { mainAreas: '', range: '', humanRelation: '' },
+            dangerLevelHistory: [
+                {
+                    chapterNumber: parseInt(firstAppearance.match(/\d+/)?.[0] || '1', 10),
+                    dangerLevel: baseDangerLevel,
+                    threatLevel: this.getThreatLevel(baseDangerLevel),
+                    protagonistStatus: '待补充',
+                    note: '首次出场',
+                },
+            ],
+            chapterRecords: [],
+        };
+    }
+    async createCreatureDirectories(rootPath) {
+        const creaturesRoot = path_1.default.join(rootPath, 'creatures');
+        await (0, utils_1.ensureDir)(creaturesRoot);
+        await (0, utils_1.ensureDir)(path_1.default.join(creaturesRoot, 'raw'));
+        for (const category of CREATURE_CATEGORIES) {
+            await (0, utils_1.ensureDir)(path_1.default.join(creaturesRoot, category));
+            await (0, utils_1.ensureDir)(path_1.default.join(creaturesRoot, 'raw', category));
+            await (0, utils_1.writeFile)(path_1.default.join(creaturesRoot, category, 'README.md'), this.buildInitialCreatureCategoryGuide(category));
+        }
+    }
+    async readOptionalFile(filePath) {
+        return fs_1.default.existsSync(filePath) ? (0, utils_1.readFile)(filePath) : '';
+    }
     buildInitialGlobalSummary(title, setting) {
         return `# ${title} - 全局摘要
 
 ## 世界观设定
-
-${setting}
+${setting || EMPTY_TEXT}
 
 ## 主要人物
-
-(暂无)
+${EMPTY_TEXT}
 
 ## 主线进展
-
-(尚未开始)
+${EMPTY_TEXT}
 
 ## 活跃伏笔
-
-(暂无)
+${EMPTY_TEXT}
 
 ## 已完结情节
-
-(暂无)
+${EMPTY_TEXT}
 `;
     }
     buildInitialCharacterRelationships() {
         return `# 人物关系
 
 ## 主要人物
-
-(暂无)
+${EMPTY_TEXT}
 
 ## 人物关系
-
-(暂无)
-
-## 阵营与立场
-
-(暂无)
+${EMPTY_TEXT}
 
 ## 当前状态
-
-(暂无)
-
-## 重要物品与线索归属
-
-(暂无)
+${EMPTY_TEXT}
 `;
     }
     buildInitialCharacterCardGuide() {
         return `# 角色卡说明
 
-这里用于存放单个角色的独立卡片，适合维护长篇中的人物状态。
-
-建议每张角色卡至少包含：
-- 角色身份与外显标签
-- 首次出场章节
-- 当前立场与目标
-- 与主要人物的关系
-- 当前状态（受伤、失踪、掌握的秘密等）
-- 重要物品/线索归属
-- 不能写错的设定
+这里用于保存单个角色的独立卡片。
+建议至少包含：身份、立场、首次出场、人物简介、最近章节记录。
 `;
     }
     buildInitialTimeline() {
         return `# 时间线
 
-## 远期背景
-
-(暂无)
-
 ## 当前故事时间线
 
 | 序号 | 时间/时段 | 章节 | 地点 | 事件 | 涉及人物 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 待定 | 待定 | 待定 | (暂无) | (暂无) |
+| 1 | 待定 | 待定 | 待定 | ${EMPTY_TEXT} | ${EMPTY_TEXT} |
 `;
     }
     buildInitialChapterPlanEntries() {
@@ -314,13 +398,10 @@ ${setting}
             chapterNumber,
             title: '待定',
             status: '待写',
-            goal: '(暂无)',
-            conflict: '(暂无)',
-            note: '(暂无)',
+            goal: EMPTY_TEXT,
+            conflict: EMPTY_TEXT,
+            note: EMPTY_TEXT,
         };
-    }
-    buildInitialChapterPlan() {
-        return this.renderChapterPlanMarkdown(this.buildInitialChapterPlanEntries());
     }
     renderChapterPlanMarkdown(entries) {
         const rows = entries
@@ -328,26 +409,25 @@ ${setting}
             .sort((a, b) => a.chapterNumber - b.chapterNumber)
             .map(entry => `| ${entry.chapterNumber} | ${entry.title} | ${entry.status} | ${entry.goal} | ${entry.conflict} | ${entry.note} |`)
             .join('\n');
-        return `# 章节计划板
+        return `# 章节计划表
 
 | 章节 | 标题 | 状态 | 本章目标 | 关键冲突 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 ${rows}
 
-状态建议：待写 / 草稿 / 已成稿 / 已更新摘要 / 已定稿
+状态建议：待写 / 草稿 / 已完成 / 已定稿
 `;
     }
     buildInitialStyleReferenceGuide() {
         return `# 风格参考库说明
 
-这里存放你自己的参考写法卡片，而不是直接把长篇原文塞进上下文。
+原始素材放在 references/raw，提炼后的风格卡放在 references/cards。
+`;
+    }
+    buildInitialCreatureCategoryGuide(category) {
+        return `# ${category} 说明
 
-建议流程：
-1. 把喜欢的环境描写、人物描写、打斗描写原文放进 references/raw
-2. 提炼成短小的“风格卡”放进 references/cards
-3. 写作时在要点里写：调用风格：环境,人物,打斗
-
-风格卡建议包含：适用场景、节奏特点、句式特点、感官重点、禁忌、可借鉴技巧。
+此目录用于保存 ${category} 生物卡片。
 `;
     }
     sanitizeFileName(input) {
@@ -373,17 +453,25 @@ ${rows}
         const metadata = JSON.stringify({ name });
         return `<!-- novel-character-meta: ${metadata} -->\n${content.trim()}\n`;
     }
+    wrapStyleReferenceContent(category, name, content) {
+        const metadata = JSON.stringify({ category, name });
+        return `<!-- novel-style-meta: ${metadata} -->\n${content.trim()}\n`;
+    }
+    wrapCreatureCardContent(name, category, content, dangerLevel) {
+        const metadata = JSON.stringify({ name, category, dangerLevel });
+        return `<!-- novel-creature-meta: ${metadata} -->\n${content.trim()}\n`;
+    }
     buildSnapshotTimestamp() {
         const now = new Date();
-        const parts = [
+        return [
             now.getFullYear(),
             `${now.getMonth() + 1}`.padStart(2, '0'),
             `${now.getDate()}`.padStart(2, '0'),
+            '-',
             `${now.getHours()}`.padStart(2, '0'),
             `${now.getMinutes()}`.padStart(2, '0'),
             `${now.getSeconds()}`.padStart(2, '0'),
-        ];
-        return `${parts[0]}${parts[1]}${parts[2]}-${parts[3]}${parts[4]}${parts[5]}`;
+        ].join('');
     }
     async copySnapshotItem(sourcePath, destinationPath) {
         const stat = await fs_1.default.promises.stat(sourcePath);
@@ -400,7 +488,7 @@ ${rows}
     }
     normalizeLoadedProject(projectPath, project) {
         const storedRootPath = project.rootPath;
-        return {
+        const normalized = {
             ...project,
             rootPath: projectPath,
             config: {
@@ -413,15 +501,18 @@ ${rows}
                 summaryPath: this.rebaseStoredPath(projectPath, storedRootPath, chapter.summaryPath),
             })),
         };
+        normalized.totalChapters = normalized.chapters.length;
+        normalized.currentChapter = normalized.currentChapter || normalized.chapters.at(-1)?.number || 0;
+        return normalized;
     }
     toStoredProject(project) {
         return {
             ...project,
+            rootPath: '.',
             config: {
                 ...types_1.DEFAULT_CONFIG,
                 ...(project.config ?? {}),
             },
-            rootPath: '.',
             chapters: project.chapters.map(chapter => ({
                 ...chapter,
                 contentPath: path_1.default.relative(project.rootPath, chapter.contentPath),
@@ -447,10 +538,6 @@ ${rows}
     buildStyleReferenceFileName(category, name) {
         return `${this.sanitizeFileName(category)}--${this.sanitizeFileName(name)}.md`;
     }
-    wrapStyleReferenceContent(category, name, content) {
-        const metadata = JSON.stringify({ category, name });
-        return `<!-- novel-style-meta: ${metadata} -->\n${content.trim()}\n`;
-    }
     parseStyleReferenceContent(content) {
         const match = content.match(/^<!--\s*novel-style-meta:\s*(\{.*\})\s*-->\r?\n([\s\S]*)$/);
         if (!match) {
@@ -461,11 +548,7 @@ ${rows}
             if (!metadata.category || !metadata.name) {
                 return null;
             }
-            return {
-                category: metadata.category,
-                name: metadata.name,
-                content: match[2].trim(),
-            };
+            return { category: metadata.category, name: metadata.name, content: match[2].trim() };
         }
         catch {
             return null;
@@ -481,14 +564,210 @@ ${rows}
             if (!metadata.name) {
                 return null;
             }
+            return { name: metadata.name, content: match[2].trim() };
+        }
+        catch {
+            return null;
+        }
+    }
+    parseCreatureCardContent(content) {
+        const match = content.match(/^<!--\s*novel-creature-meta:\s*(\{.*\})\s*-->\r?\n([\s\S]*)$/);
+        if (!match) {
+            return null;
+        }
+        try {
+            const metadata = JSON.parse(match[1]);
+            if (!metadata.name || !metadata.category) {
+                return null;
+            }
+            const parsed = this.parseCreatureCardBody(match[2].trim());
             return {
                 name: metadata.name,
-                content: match[2].trim(),
+                category: metadata.category,
+                firstAppearance: parsed.firstAppearance || '未知',
+                baseDangerLevel: metadata.dangerLevel || parsed.baseDangerLevel || '中',
+                appearance: parsed.appearance || { size: '', features: '', colors: '', specialMarks: '' },
+                abilities: parsed.abilities || { attack: '', defense: '', special: '', weakness: '' },
+                ecology: parsed.ecology || { habitat: '', activityPattern: '', diet: '', socialBehavior: '' },
+                utility: parsed.utility || { edible: '', material: '', medicinal: '', other: '' },
+                distribution: parsed.distribution || { mainAreas: '', range: '', humanRelation: '' },
+                dangerLevelHistory: parsed.dangerLevelHistory || [],
+                chapterRecords: parsed.chapterRecords || [],
             };
         }
         catch {
             return null;
         }
+    }
+    parseCreatureCardBody(body) {
+        const result = {
+            dangerLevelHistory: [],
+            chapterRecords: [],
+            appearance: { size: '', features: '', colors: '', specialMarks: '' },
+            abilities: { attack: '', defense: '', special: '', weakness: '' },
+            ecology: { habitat: '', activityPattern: '', diet: '', socialBehavior: '' },
+            utility: { edible: '', material: '', medicinal: '', other: '' },
+            distribution: { mainAreas: '', range: '', humanRelation: '' },
+        };
+        const lines = body.split(/\r?\n/);
+        let currentSection = '';
+        for (const line of lines) {
+            if (line.startsWith('## ')) {
+                currentSection = line.slice(3).trim();
+                continue;
+            }
+            const cleanLine = line.replace(/^\s*[-*]\s*/, '').trim();
+            if (!cleanLine) {
+                continue;
+            }
+            if (currentSection === '基础信息') {
+                if (cleanLine.startsWith('首次出场：'))
+                    result.firstAppearance = cleanLine.replace('首次出场：', '').trim();
+                if (cleanLine.startsWith('基础危险等级：'))
+                    result.baseDangerLevel = cleanLine.replace('基础危险等级：', '').trim();
+            }
+            else if (currentSection === '外观描述') {
+                if (cleanLine.startsWith('体型：'))
+                    result.appearance.size = cleanLine.replace('体型：', '').trim();
+                else if (cleanLine.startsWith('外形特征：'))
+                    result.appearance.features = cleanLine.replace('外形特征：', '').trim();
+                else if (cleanLine.startsWith('颜色/纹路：'))
+                    result.appearance.colors = cleanLine.replace('颜色/纹路：', '').trim();
+                else if (cleanLine.startsWith('特殊标记：'))
+                    result.appearance.specialMarks = cleanLine.replace('特殊标记：', '').trim();
+            }
+            else if (currentSection === '能力与特征') {
+                if (cleanLine.startsWith('攻击方式：'))
+                    result.abilities.attack = cleanLine.replace('攻击方式：', '').trim();
+                else if (cleanLine.startsWith('防御能力：'))
+                    result.abilities.defense = cleanLine.replace('防御能力：', '').trim();
+                else if (cleanLine.startsWith('特殊能力：'))
+                    result.abilities.special = cleanLine.replace('特殊能力：', '').trim();
+                else if (cleanLine.startsWith('弱点：'))
+                    result.abilities.weakness = cleanLine.replace('弱点：', '').trim();
+            }
+            else if (currentSection === '生态与习性') {
+                if (cleanLine.startsWith('栖息环境：'))
+                    result.ecology.habitat = cleanLine.replace('栖息环境：', '').trim();
+                else if (cleanLine.startsWith('行动规律：'))
+                    result.ecology.activityPattern = cleanLine.replace('行动规律：', '').trim();
+                else if (cleanLine.startsWith('食性：'))
+                    result.ecology.diet = cleanLine.replace('食性：', '').trim();
+                else if (cleanLine.startsWith('群居属性：'))
+                    result.ecology.socialBehavior = cleanLine.replace('群居属性：', '').trim();
+            }
+            else if (currentSection === '用途与价值') {
+                if (cleanLine.startsWith('食用价值：'))
+                    result.utility.edible = cleanLine.replace('食用价值：', '').trim();
+                else if (cleanLine.startsWith('材料价值：'))
+                    result.utility.material = cleanLine.replace('材料价值：', '').trim();
+                else if (cleanLine.startsWith('药用价值：'))
+                    result.utility.medicinal = cleanLine.replace('药用价值：', '').trim();
+                else if (cleanLine.startsWith('其他价值：'))
+                    result.utility.other = cleanLine.replace('其他价值：', '').trim();
+            }
+            else if (currentSection === '已知分布') {
+                if (cleanLine.startsWith('主要分布区域：'))
+                    result.distribution.mainAreas = cleanLine.replace('主要分布区域：', '').trim();
+                else if (cleanLine.startsWith('活动范围边界：'))
+                    result.distribution.range = cleanLine.replace('活动范围边界：', '').trim();
+                else if (cleanLine.startsWith('与人类活动区域的关系：'))
+                    result.distribution.humanRelation = cleanLine.replace('与人类活动区域的关系：', '').trim();
+            }
+            else if (currentSection === '危险等级历史（动态变化）' && line.trim().startsWith('|')) {
+                const cells = line
+                    .trim()
+                    .split('|')
+                    .map(cell => cell.trim())
+                    .filter(Boolean);
+                if (cells.length >= 5 && /^第\d+章$/.test(cells[0])) {
+                    result.dangerLevelHistory.push({
+                        chapterNumber: parseInt(cells[0].match(/\d+/)?.[0] || '0', 10),
+                        dangerLevel: cells[1],
+                        threatLevel: cells[2],
+                        protagonistStatus: cells[3],
+                        note: cells[4],
+                    });
+                }
+            }
+            else if (currentSection === '章节互动记录' && line.trim().startsWith('- ')) {
+                result.chapterRecords.push(line.trim().replace(/^-/, '').trim());
+            }
+        }
+        return result;
+    }
+    renderCreatureCardMarkdown(card) {
+        const lines = [
+            `# ${card.name}`,
+            '',
+            '## 基础信息',
+            `- 分类：${card.category}`,
+            `- 首次出场：${card.firstAppearance}`,
+            `- 基础危险等级：${card.baseDangerLevel}`,
+            '',
+            '## 外观描述',
+            `- 体型：${card.appearance.size}`,
+            `- 外形特征：${card.appearance.features}`,
+            `- 颜色/纹路：${card.appearance.colors}`,
+            `- 特殊标记：${card.appearance.specialMarks}`,
+            '',
+            '## 能力与特征',
+            `- 攻击方式：${card.abilities.attack}`,
+            `- 防御能力：${card.abilities.defense}`,
+            `- 特殊能力：${card.abilities.special}`,
+            `- 弱点：${card.abilities.weakness}`,
+            '',
+            '## 生态与习性',
+            `- 栖息环境：${card.ecology.habitat}`,
+            `- 行动规律：${card.ecology.activityPattern}`,
+            `- 食性：${card.ecology.diet}`,
+            `- 群居属性：${card.ecology.socialBehavior}`,
+            '',
+            '## 用途与价值',
+            `- 食用价值：${card.utility.edible}`,
+            `- 材料价值：${card.utility.material}`,
+            `- 药用价值：${card.utility.medicinal}`,
+            `- 其他价值：${card.utility.other}`,
+            '',
+            '## 已知分布',
+            `- 主要分布区域：${card.distribution.mainAreas}`,
+            `- 活动范围边界：${card.distribution.range}`,
+            `- 与人类活动区域的关系：${card.distribution.humanRelation}`,
+            '',
+            '## 危险等级历史（动态变化）',
+            '',
+            '| 章节 | 危险等级 | 威胁程度 | 当时主角/部落状态 | 备注 |',
+            '| --- | --- | --- | --- | --- |',
+        ];
+        for (const entry of card.dangerLevelHistory) {
+            lines.push(`| 第${entry.chapterNumber}章 | ${entry.dangerLevel} | ${entry.threatLevel} | ${entry.protagonistStatus} | ${entry.note} |`);
+        }
+        lines.push('', '## 章节互动记录');
+        for (const record of card.chapterRecords) {
+            lines.push(`- ${record}`);
+        }
+        return lines.join('\n');
+    }
+    async readCreatureCardDirectory(dirPath) {
+        if (!fs_1.default.existsSync(dirPath)) {
+            return [];
+        }
+        const entries = await fs_1.default.promises.readdir(dirPath, { withFileTypes: true });
+        const files = entries
+            .filter(entry => entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'README.md')
+            .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+        const cards = [];
+        for (const file of files) {
+            const filePath = path_1.default.join(dirPath, file.name);
+            const rawContent = await (0, utils_1.readFile)(filePath);
+            const parsed = this.parseCreatureCardContent(rawContent);
+            cards.push({
+                name: parsed?.name ?? file.name.replace(/\.md$/i, '').replace(/_/g, ' '),
+                content: parsed ? this.renderCreatureCardMarkdown(parsed) : rawContent.trim(),
+                path: filePath,
+            });
+        }
+        return cards;
     }
     async readStyleReferenceDirectory(dirPath, skipReadme) {
         if (!fs_1.default.existsSync(dirPath)) {
@@ -520,62 +799,66 @@ ${rows}
                 const content = await (0, utils_1.readFile)(jsonPath);
                 const parsed = JSON.parse(content);
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                    return parsed
-                        .filter(entry => Number.isFinite(entry.chapterNumber))
-                        .sort((a, b) => a.chapterNumber - b.chapterNumber);
+                    return parsed.map(entry => this.mergeChapterPlanEntry(this.createDefaultChapterPlanEntry(entry.chapterNumber), entry));
                 }
             }
             catch {
-                // Fall through to markdown parsing.
+                // fall through
             }
         }
         const markdown = await this.readChapterPlan(project);
-        const parsedFromMarkdown = this.parseChapterPlanMarkdown(markdown);
-        return parsedFromMarkdown.length > 0 ? parsedFromMarkdown : this.buildInitialChapterPlanEntries();
+        const parsedEntries = this.parseChapterPlanMarkdown(markdown);
+        return parsedEntries.length > 0 ? parsedEntries : this.buildInitialChapterPlanEntries();
     }
     async saveChapterPlanEntries(project, entries) {
+        const jsonPath = path_1.default.join(project.rootPath, 'planning', 'chapter-plan.json');
         const normalizedEntries = entries
             .slice()
-            .sort((a, b) => a.chapterNumber - b.chapterNumber);
-        await (0, utils_1.writeFile)(path_1.default.join(project.rootPath, 'planning', 'chapter-plan.json'), JSON.stringify(normalizedEntries, null, 2) + '\n');
+            .sort((a, b) => a.chapterNumber - b.chapterNumber)
+            .map(entry => this.mergeChapterPlanEntry(this.createDefaultChapterPlanEntry(entry.chapterNumber), entry));
+        await (0, utils_1.writeFile)(jsonPath, JSON.stringify(normalizedEntries, null, 2) + '\n');
     }
-    parseChapterPlanMarkdown(content) {
-        const entries = [];
-        for (const line of content.split(/\r?\n/)) {
-            if (!line.trim().startsWith('|')) {
-                continue;
-            }
-            const cells = line
+    parseChapterPlanMarkdown(markdown) {
+        const lines = markdown.split(/\r?\n/);
+        const rows = lines.filter(line => /^\|\s*\d+\s*\|/.test(line));
+        return rows.map(row => {
+            const cells = row
                 .split('|')
-                .slice(1, -1)
-                .map(cell => cell.trim());
-            if (cells.length < 6) {
-                continue;
-            }
-            const chapterNumber = Number(cells[0]);
-            if (!Number.isFinite(chapterNumber)) {
-                continue;
-            }
-            entries.push({
-                chapterNumber,
-                title: cells[1] || '待定',
-                status: cells[2] || '待写',
-                goal: cells[3] || '(暂无)',
-                conflict: cells[4] || '(暂无)',
-                note: cells[5] || '(暂无)',
+                .map(cell => cell.trim())
+                .filter(Boolean);
+            return this.mergeChapterPlanEntry(this.createDefaultChapterPlanEntry(Number(cells[0])), {
+                chapterNumber: Number(cells[0]),
+                title: cells[1],
+                status: cells[2],
+                goal: cells[3],
+                conflict: cells[4],
+                note: cells[5],
             });
-        }
-        return entries.sort((a, b) => a.chapterNumber - b.chapterNumber);
+        });
     }
     mergeChapterPlanEntry(current, patch) {
         return {
             chapterNumber: patch.chapterNumber,
             title: patch.title?.trim() || current.title || '待定',
             status: patch.status?.trim() || current.status || '待写',
-            goal: patch.goal?.trim() || current.goal || '(暂无)',
-            conflict: patch.conflict?.trim() || current.conflict || '(暂无)',
-            note: patch.note?.trim() || current.note || '(暂无)',
+            goal: patch.goal?.trim() || current.goal || EMPTY_TEXT,
+            conflict: patch.conflict?.trim() || current.conflict || EMPTY_TEXT,
+            note: patch.note?.trim() || current.note || EMPTY_TEXT,
         };
+    }
+    getThreatLevel(dangerLevel) {
+        switch (dangerLevel) {
+            case '极高':
+                return '致命威胁';
+            case '高':
+                return '危险生物';
+            case '中':
+                return '潜在威胁';
+            case '低':
+            case '无害':
+            default:
+                return '相对安全';
+        }
     }
 }
 exports.ProjectManager = ProjectManager;

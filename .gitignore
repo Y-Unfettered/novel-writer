@@ -7,6 +7,9 @@ backups/
 # Claude Code 本地设置
 .claude/
 
+# Trae 本地设置
+.trae/
+
 # node_modules - 通过 npm install 安装，不上传
 node_modules/
 

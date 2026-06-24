@@ -35,3 +35,4 @@ export declare function parseGlobalSummary(text: string): any;
  * Serialize GlobalSummary to markdown
  */
 export declare function serializeGlobalSummary(summary: any): string;
+export declare function extractLikelyCreatureNames(text: string, existingNames?: string[]): string[];

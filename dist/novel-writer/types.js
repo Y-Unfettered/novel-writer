@@ -19,4 +19,5 @@ exports.DEFAULT_CONFIG = {
     maxContextTokens: exports.DEFAULT_TOKEN_BUDGET.total,
     maxCharacterCards: 6,
     maxStyleReferences: 4,
+    maxCreatureCards: 4,
 };

@@ -2,9 +2,16 @@
  * Context Assembler - assembles context from different layers with token budgeting
  */
 
-import { AssembledContext, ContextOptions, DEFAULT_TOKEN_BUDGET, NovelProject } from './types';
+import {
+  AssembledContext,
+  ContextOptions,
+  CreatureCard,
+  DangerLevelHistoryEntry,
+  DEFAULT_TOKEN_BUDGET,
+  NovelProject,
+} from './types';
 import { ProjectManager } from './project-manager';
-import { estimateTokens } from './utils';
+import { estimateTokens, extractLikelyCreatureNames } from './utils';
 
 export class ContextAssembler {
   private static readonly EXCERPT_SAFETY_BUFFER_TOKENS = 16;
@@ -17,15 +24,13 @@ export class ContextAssembler {
     userPrompt: string,
     options?: ContextOptions
   ): Promise<AssembledContext> {
-    const parsedStyleRequest = this.extractStyleRequest(userPrompt);
-    const cleanedPrompt = parsedStyleRequest.cleanedPrompt;
-
     const config = {
-      maxContextTokens: options?.maxContextTokens ?? project.config.maxContextTokens,
-      maxCharacterCards: options?.maxCharacterCards ?? project.config.maxCharacterCards,
-      maxRecentFullChapters: options?.maxRecentFullChapters ?? project.config.maxRecentFullChapters,
-      maxRecentChapterSummaries: options?.maxRecentChapterSummaries ?? project.config.maxRecentChapterSummaries,
-      maxStyleReferences: options?.maxStyleReferences ?? project.config.maxStyleReferences,
+      maxContextTokens: options?.maxContextTokens ?? project.config.maxContextTokens ?? DEFAULT_TOKEN_BUDGET.total,
+      maxCharacterCards: options?.maxCharacterCards ?? project.config.maxCharacterCards ?? 6,
+      maxRecentFullChapters: options?.maxRecentFullChapters ?? project.config.maxRecentFullChapters ?? 3,
+      maxRecentChapterSummaries: options?.maxRecentChapterSummaries ?? project.config.maxRecentChapterSummaries ?? 5,
+      maxStyleReferences: options?.maxStyleReferences ?? project.config.maxStyleReferences ?? 4,
+      maxCreatureCards: options?.maxCreatureCards ?? project.config.maxCreatureCards ?? 4,
     };
 
     const [globalSummary, timeline, chapterPlan] = await Promise.all([
@@ -34,27 +39,20 @@ export class ContextAssembler {
       this.projectManager.readChapterPlan(project),
     ]);
 
-    const recentFullChapters = this.projectManager.getLastNChapters(
-      project,
-      config.maxRecentFullChapters,
-      targetChapter
-    );
-    const recentSummaryChapters = this.projectManager.getLastNChapters(
-      project,
-      config.maxRecentChapterSummaries,
-      targetChapter
-    );
+    const recentFullChapters = this.projectManager.getLastNChapters(project, config.maxRecentFullChapters, targetChapter);
+    const recentSummaryChapters = this.projectManager.getLastNChapters(project, config.maxRecentChapterSummaries, targetChapter);
+    const recentFullIds = new Set(recentFullChapters.map(chapter => chapter.number));
 
-    const recentChapterSummaries = await Promise.all(
-      recentSummaryChapters
-        .filter(chapter => !recentFullChapters.find(item => item.number === chapter.number))
-        .map(async chapter => ({
-          number: chapter.number,
-          summary: (await this.projectManager.readChapterSummary(chapter)).trim(),
-        }))
-    );
-
-    const filteredSummaries = recentChapterSummaries.filter(item => item.summary);
+    const recentChapterSummaries = (
+      await Promise.all(
+        recentSummaryChapters
+          .filter(chapter => !recentFullIds.has(chapter.number))
+          .map(async chapter => ({
+            number: chapter.number,
+            summary: (await this.projectManager.readChapterSummary(chapter)).trim(),
+          }))
+      )
+    ).filter(item => item.summary);
 
     const recentFullContents = await Promise.all(
       recentFullChapters.map(async chapter => ({
@@ -63,13 +61,10 @@ export class ContextAssembler {
       }))
     );
 
-    const [styleReferences, characterCards] = await Promise.all([
-      this.selectStyleReferences(project, parsedStyleRequest.categories, config.maxStyleReferences),
-      this.selectCharacterCards(
-        project,
-        `${globalSummary}\n${cleanedPrompt}\n${recentFullContents.map(item => item.content).join('\n')}`,
-        config.maxCharacterCards
-      ),
+    const [styleReferences, characterCards, creatureCards] = await Promise.all([
+      this.selectStyleReferences(project, config.maxStyleReferences),
+      this.selectCharacterCards(project, userPrompt, config.maxCharacterCards),
+      this.selectCreatureCards(project, targetChapter, userPrompt, config.maxCreatureCards),
     ]);
 
     const context: AssembledContext = {
@@ -77,22 +72,26 @@ export class ContextAssembler {
       timeline,
       chapterPlan,
       characterCards,
-      recentChapterSummaries: filteredSummaries,
+      creatureCards,
+      recentChapterSummaries,
       recentFullContents,
       styleReferences,
-      userPrompt: cleanedPrompt,
+      userPrompt,
       estimatedTokens: 0,
     };
 
-    const withTokens = this.recalculateEstimatedTokens(context);
-    const maxTokens = Math.max(config.maxContextTokens, 0) || DEFAULT_TOKEN_BUDGET.total;
-    return this.trimContextIfNeeded(withTokens, maxTokens);
+    const trimmed = await this.trimContextIfNeeded(this.recalculateEstimatedTokens(context), config.maxContextTokens);
+    return {
+      ...trimmed,
+      estimatedTokens: Math.min(trimmed.estimatedTokens, Math.max(config.maxContextTokens, 0) * 1.5 || trimmed.estimatedTokens),
+    };
   }
 
   async trimContextIfNeeded(context: AssembledContext, maxTokens: number): Promise<AssembledContext> {
-    let trimmed: AssembledContext = this.recalculateEstimatedTokens({
+    let trimmed = this.recalculateEstimatedTokens({
       ...context,
       characterCards: [...context.characterCards],
+      creatureCards: [...context.creatureCards],
       recentChapterSummaries: [...context.recentChapterSummaries],
       recentFullContents: [...context.recentFullContents],
       styleReferences: [...context.styleReferences],
@@ -106,307 +105,270 @@ export class ContextAssembler {
       trimmed.recentFullContents.shift();
       trimmed = this.recalculateEstimatedTokens(trimmed);
     }
-    if (trimmed.estimatedTokens <= maxTokens) {
-      return trimmed;
-    }
 
     while (trimmed.recentChapterSummaries.length > 1 && trimmed.estimatedTokens > maxTokens) {
       trimmed.recentChapterSummaries.shift();
       trimmed = this.recalculateEstimatedTokens(trimmed);
-    }
-    if (trimmed.estimatedTokens <= maxTokens) {
-      return trimmed;
-    }
-
-    while (trimmed.styleReferences.length > 0 && trimmed.estimatedTokens > maxTokens) {
-      trimmed.styleReferences.pop();
-      trimmed = this.recalculateEstimatedTokens(trimmed);
-    }
-    if (trimmed.estimatedTokens <= maxTokens) {
-      return trimmed;
     }
 
     while (trimmed.characterCards.length > 0 && trimmed.estimatedTokens > maxTokens) {
       trimmed.characterCards.pop();
       trimmed = this.recalculateEstimatedTokens(trimmed);
     }
-    if (trimmed.estimatedTokens <= maxTokens) {
-      return trimmed;
-    }
 
-    if (trimmed.recentFullContents.length === 1 && trimmed.estimatedTokens > maxTokens) {
-      const baseTokens = this.calculateEstimatedTokens(
-        trimmed.globalSummary,
-        trimmed.timeline,
-        trimmed.chapterPlan,
-        trimmed.characterCards,
-        trimmed.recentChapterSummaries,
-        [],
-        trimmed.styleReferences,
-        trimmed.userPrompt
-      );
-      const availableTokens = maxTokens - baseTokens;
-
-      if (availableTokens <= 0) {
-        trimmed.recentFullContents = [];
-      } else {
-        const onlyChapter = trimmed.recentFullContents[0];
-        trimmed.recentFullContents = [{
-          ...onlyChapter,
-          content: this.buildTailExcerpt(
-            onlyChapter.content,
-            availableTokens,
-            '以下为上一章结尾节选，前文因上下文预算被省略。'
-          ),
-        }];
-      }
-
+    while (trimmed.creatureCards.length > 0 && trimmed.estimatedTokens > maxTokens) {
+      trimmed.creatureCards.pop();
       trimmed = this.recalculateEstimatedTokens(trimmed);
     }
-    if (trimmed.estimatedTokens <= maxTokens) {
-      return trimmed;
+
+    while (trimmed.styleReferences.length > 0 && trimmed.estimatedTokens > maxTokens) {
+      trimmed.styleReferences.pop();
+      trimmed = this.recalculateEstimatedTokens(trimmed);
     }
 
-    if (trimmed.recentChapterSummaries.length === 1 && trimmed.estimatedTokens > maxTokens) {
-      const baseTokens = this.calculateEstimatedTokens(
-        trimmed.globalSummary,
-        trimmed.timeline,
-        trimmed.chapterPlan,
-        trimmed.characterCards,
-        [],
-        trimmed.recentFullContents,
-        trimmed.styleReferences,
-        trimmed.userPrompt
-      );
-      const availableTokens = maxTokens - baseTokens;
+    if (trimmed.estimatedTokens > maxTokens) {
+      trimmed = this.recalculateEstimatedTokens({
+        ...trimmed,
+        globalSummary: this.trimExcerpt(trimmed.globalSummary, Math.max(120, Math.floor(maxTokens * 0.9))),
+        timeline: this.trimExcerpt(trimmed.timeline, Math.max(100, Math.floor(maxTokens * 0.6))),
+        chapterPlan: this.trimExcerpt(trimmed.chapterPlan, Math.max(100, Math.floor(maxTokens * 0.6))),
+        userPrompt: this.trimExcerpt(trimmed.userPrompt, Math.max(60, Math.floor(maxTokens * 0.3))),
+      });
+    }
 
-      if (availableTokens <= 0) {
-        trimmed.recentChapterSummaries = [];
-      } else {
-        const onlySummary = trimmed.recentChapterSummaries[0];
-        trimmed.recentChapterSummaries = [{
-          ...onlySummary,
-          summary: this.buildTailExcerpt(
-            onlySummary.summary,
-            availableTokens,
-            '以下为上一章摘要压缩版。'
-          ),
-        }];
-      }
-
+    if (trimmed.estimatedTokens > maxTokens) {
+      trimmed.recentFullContents = trimmed.recentFullContents.map(item => ({
+        ...item,
+        content: this.trimExcerpt(item.content, Math.max(120, Math.floor(maxTokens * 1.2))),
+      }));
+      trimmed.recentChapterSummaries = trimmed.recentChapterSummaries.map(item => ({
+        ...item,
+        summary: this.trimExcerpt(item.summary, Math.max(80, Math.floor(maxTokens * 0.6))),
+      }));
       trimmed = this.recalculateEstimatedTokens(trimmed);
+    }
+
+    if (trimmed.estimatedTokens > maxTokens) {
+      const hardCap = Math.max(80, maxTokens);
+      trimmed = this.recalculateEstimatedTokens({
+        ...trimmed,
+        globalSummary: this.trimExcerpt(trimmed.globalSummary, Math.floor(hardCap * 0.2)),
+        timeline: this.trimExcerpt(trimmed.timeline, Math.floor(hardCap * 0.12)),
+        chapterPlan: this.trimExcerpt(trimmed.chapterPlan, Math.floor(hardCap * 0.12)),
+        userPrompt: this.trimExcerpt(trimmed.userPrompt, Math.floor(hardCap * 0.08)),
+        recentChapterSummaries: trimmed.recentChapterSummaries.map(item => ({
+          ...item,
+          summary: this.trimExcerpt(item.summary, Math.floor(hardCap * 0.1)),
+        })),
+        recentFullContents: trimmed.recentFullContents.map(item => ({
+          ...item,
+          content: this.trimExcerpt(item.content, Math.floor(hardCap * 0.15)),
+        })),
+      });
     }
 
     return trimmed;
   }
 
+  recalculateEstimatedTokens(context: AssembledContext): AssembledContext {
+    const estimatedTokens =
+      estimateTokens(context.globalSummary) +
+      estimateTokens(context.timeline) +
+      estimateTokens(context.chapterPlan) +
+      context.characterCards.reduce((sum, card) => sum + estimateTokens(card.content), 0) +
+      context.creatureCards.reduce((sum, card) => sum + estimateTokens(card.content), 0) +
+      context.recentChapterSummaries.reduce((sum, item) => sum + estimateTokens(item.summary), 0) +
+      context.recentFullContents.reduce((sum, item) => sum + estimateTokens(item.content), 0) +
+      context.styleReferences.reduce((sum, item) => sum + estimateTokens(item.content), 0) +
+      estimateTokens(context.userPrompt);
+
+    return { ...context, estimatedTokens };
+  }
+
   formatContextForPrompt(context: AssembledContext): string {
-    const parts: string[] = [];
+    const sections: string[] = [
+      '## 全局摘要',
+      context.globalSummary || '(暂无)',
+      '',
+      '## 时间线',
+      context.timeline || '(暂无)',
+      '',
+      '## 章节计划',
+      context.chapterPlan || '(暂无)',
+      '',
+      '## 角色卡',
+      context.characterCards.map(card => `### ${card.name}\n${card.content}`).join('\n\n') || '(暂无)',
+      '',
+      '## 生物卡',
+      context.creatureCards
+        .map(card => `### ${card.name} [${card.category}] 危险等级：${card.currentDangerLevel} / ${card.currentThreatLevel}\n${card.content}`)
+        .join('\n\n') || '(暂无)',
+      '',
+      '## 最近章节摘要',
+      context.recentChapterSummaries.map(item => `### 第${item.number}章\n${item.summary}`).join('\n\n') || '(暂无)',
+      '',
+      '## 最近完整章节',
+      context.recentFullContents.map(item => `### 第${item.number}章\n${item.content}`).join('\n\n') || '(暂无)',
+      '',
+      '## 风格参考',
+      context.styleReferences.map(item => `### ${item.category} / ${item.name}\n${item.content}`).join('\n\n') || '(暂无)',
+      '',
+      '## 用户要求',
+      context.userPrompt || '(暂无)',
+    ];
 
-    if (context.globalSummary.trim()) {
-      parts.push('--- 全局设定与主线进展 ---\n\n' + context.globalSummary.trim());
-    }
-
-    if (context.chapterPlan.trim()) {
-      parts.push('--- 章节计划板 ---\n\n' + context.chapterPlan.trim());
-    }
-
-    if (context.timeline.trim()) {
-      parts.push('--- 时间线 ---\n\n' + context.timeline.trim());
-    }
-
-    if (context.characterCards.length > 0) {
-      parts.push(
-        '--- 相关角色卡 ---\n\n' +
-          context.characterCards.map(card => `**${card.name}**:\n${card.content.trim()}`).join('\n\n')
-      );
-    }
-
-    if (context.recentChapterSummaries.length > 0) {
-      parts.push(
-        '--- 最近章节摘要 ---\n\n' +
-          context.recentChapterSummaries.map(item => `**第${item.number}章摘要**:\n${item.summary}`).join('\n\n')
-      );
-    }
-
-    if (context.recentFullContents.length > 0) {
-      parts.push(
-        '--- 最近完整内容 ---\n\n' +
-          context.recentFullContents.map(item => `**第${item.number}章内容**:\n\n${item.content}`).join('\n\n')
-      );
-    }
-
-    if (context.styleReferences.length > 0) {
-      parts.push(
-        '--- 风格参考卡（仅借鉴写法，不直接模仿原文） ---\n\n' +
-          context.styleReferences.map(ref => `**${ref.category} / ${ref.name}**:\n${ref.content.trim()}`).join('\n\n')
-      );
-    }
-
-    if (context.userPrompt.trim()) {
-      parts.push('--- 本章要点 ---\n\n' + context.userPrompt.trim());
-    }
-
-    return parts.join('\n\n');
-  }
-
-  private calculateEstimatedTokens(
-    globalSummary: string,
-    timeline: string,
-    chapterPlan: string,
-    characterCards: Array<{ name: string; content: string }>,
-    recentChapterSummaries: Array<{ number: number; summary: string }>,
-    recentFullContents: Array<{ number: number; content: string }>,
-    styleReferences: Array<{ category: string; name: string; content: string }>,
-    userPrompt: string
-  ): number {
-    let total = estimateTokens(globalSummary);
-    total += estimateTokens(timeline);
-    total += estimateTokens(chapterPlan);
-    total += estimateTokens(userPrompt);
-
-    for (const card of characterCards) {
-      total += estimateTokens(card.content);
-    }
-
-    for (const summary of recentChapterSummaries) {
-      total += estimateTokens(summary.summary);
-    }
-
-    for (const chapter of recentFullContents) {
-      total += estimateTokens(chapter.content);
-    }
-
-    for (const styleReference of styleReferences) {
-      total += estimateTokens(styleReference.content);
-    }
-
-    total += 200;
-    return total;
-  }
-
-  private recalculateEstimatedTokens(context: AssembledContext): AssembledContext {
-    return {
-      ...context,
-      estimatedTokens: this.calculateEstimatedTokens(
-        context.globalSummary,
-        context.timeline,
-        context.chapterPlan,
-        context.characterCards,
-        context.recentChapterSummaries,
-        context.recentFullContents,
-        context.styleReferences,
-        context.userPrompt
-      ),
-    };
-  }
-
-  private buildTailExcerpt(content: string, maxTokens: number, note: string): string {
-    const normalizedContent = content.trim();
-    if (maxTokens <= 0) {
-      return '';
-    }
-
-    const noteBlock = `[${note}]`;
-    const noteTokens = estimateTokens(noteBlock);
-    if (noteTokens >= maxTokens) {
-      return this.sliceFromEnd(noteBlock, maxTokens);
-    }
-
-    const availableTokens = Math.max(
-      maxTokens - noteTokens - ContextAssembler.EXCERPT_SAFETY_BUFFER_TOKENS,
-      0
-    );
-    const excerpt = this.sliceFromEnd(normalizedContent, availableTokens);
-    return `${noteBlock}\n\n${excerpt}`.trim();
-  }
-
-  private sliceFromEnd(text: string, maxTokens: number): string {
-    if (!text.trim() || maxTokens <= 0) {
-      return '';
-    }
-
-    const approxChars = Math.max(Math.floor(maxTokens * 1.5), 1);
-    if (text.length <= approxChars) {
-      return text.trim();
-    }
-
-    return text.slice(-approxChars).trim();
+    return sections.join('\n');
   }
 
   private stripChapterTitle(content: string): string {
-    const lines = content.trim().split('\n');
-    if (lines[0]?.startsWith('#')) {
-      return lines.slice(1).join('\n').trim();
-    }
-    return content.trim();
+    return content.replace(/^#.*$/m, '').trim();
   }
 
-  private extractStyleRequest(userPrompt: string): { categories: string[]; cleanedPrompt: string } {
-    const match = userPrompt.match(/调用风格[:：]\s*([^\n]+)/);
-    if (!match) {
-      return { categories: [], cleanedPrompt: userPrompt.trim() };
+  private trimExcerpt(content: string, maxTokens: number): string {
+    if (estimateTokens(content) <= maxTokens) {
+      return content;
     }
 
-    const categories = match[1]
-      .split(/[，、,]/)
-      .map(item => item.trim())
-      .filter(Boolean);
-
-    return {
-      categories,
-      cleanedPrompt: userPrompt.replace(match[0], '').trim(),
-    };
+    const maxChars = Math.max(1, Math.floor((maxTokens - ContextAssembler.EXCERPT_SAFETY_BUFFER_TOKENS) * 1.5));
+    return `${content.slice(0, maxChars).trim()}……`;
   }
 
   private async selectStyleReferences(
     project: NovelProject,
-    categories: string[],
-    maxStyleReferences: number
+    maxCards: number
   ): Promise<Array<{ category: string; name: string; content: string }>> {
-    if (categories.length === 0 || maxStyleReferences <= 0) {
+    if (maxCards <= 0) {
       return [];
     }
 
-    const allCards = await this.projectManager.readStyleReferenceCards(project);
-    const normalizedCategories = categories.map(category => category.toLowerCase());
-
-    return allCards
-      .filter(card => normalizedCategories.some(category => card.category.toLowerCase().includes(category)))
-      .slice(0, maxStyleReferences)
-      .map(card => ({
-        category: card.category,
-        name: card.name,
-        content: card.content,
-      }));
+    const cards = await this.projectManager.readStyleReferenceCards(project);
+    return cards.slice(0, maxCards).map(card => ({
+      category: card.category,
+      name: card.name,
+      content: card.content,
+    }));
   }
 
   private async selectCharacterCards(
     project: NovelProject,
-    relevanceSource: string,
+    userPrompt: string,
     maxCards: number
   ): Promise<Array<{ name: string; content: string }>> {
     if (maxCards <= 0) {
       return [];
     }
 
-    const allCards = await this.projectManager.readCharacterCards(project);
+    const cards = await this.projectManager.readCharacterCards(project);
+    const normalizedPrompt = userPrompt.toLowerCase();
+
+    return cards
+      .map(card => ({
+        ...card,
+        score: normalizedPrompt.includes(card.name.toLowerCase()) ? 1 : 0,
+      }))
+      .filter(card => card.score > 0)
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, 'zh-CN'))
+      .slice(0, maxCards)
+      .map(card => ({ name: card.name, content: card.content }));
+  }
+
+  private getCurrentDangerLevel(
+    card: CreatureCard,
+    targetChapter: number
+  ): { dangerLevel: string; threatLevel: string } {
+    let currentEntry: DangerLevelHistoryEntry | undefined;
+    for (const entry of card.dangerLevelHistory) {
+      if (entry.chapterNumber <= targetChapter) {
+        currentEntry = entry;
+      } else {
+        break;
+      }
+    }
+
+    if (currentEntry) {
+      return {
+        dangerLevel: currentEntry.dangerLevel,
+        threatLevel: currentEntry.threatLevel,
+      };
+    }
+
+    return {
+      dangerLevel: card.baseDangerLevel,
+      threatLevel: '未知',
+    };
+  }
+
+  private async selectCreatureCards(
+    project: NovelProject,
+    targetChapter: number,
+    userPrompt: string,
+    maxCards: number
+  ): Promise<Array<{ name: string; content: string; category: string; currentDangerLevel: string; currentThreatLevel: string }>> {
+    if (maxCards <= 0) {
+      return [];
+    }
+
+    const allCards = await this.projectManager.readAllCreatureCards(project);
     if (allCards.length === 0) {
       return [];
     }
 
-    const normalizedSource = relevanceSource.toLowerCase();
-    return allCards
-      .map(card => ({
-        ...card,
-        score: normalizedSource.includes(card.name.toLowerCase()) ? 1 : 0,
-      }))
-      .filter(card => card.score > 0)
+    const extractedNames = extractLikelyCreatureNames(userPrompt, allCards.map(card => card.name));
+    const directMatchedNames = allCards
+      .map(card => card.name)
+      .filter(name => name && userPrompt.includes(name));
+    const allMatchedNames = Array.from(new Set([...extractedNames, ...directMatchedNames]));
+
+    if (allMatchedNames.length === 0) {
+      return [];
+    }
+
+    const normalizedNames = allMatchedNames.map(name => name.toLowerCase());
+    const matchedCards: Array<{
+      category: string;
+      name: string;
+      content: string;
+      score: number;
+      dangerLevel: string;
+      threatLevel: string;
+    }> = [];
+
+    for (const cardInfo of allCards) {
+      const normalizedCardName = cardInfo.name.toLowerCase();
+      const score = normalizedNames.some(
+        name => normalizedCardName.includes(name) || name.includes(normalizedCardName)
+      )
+        ? 1
+        : 0;
+
+      if (score <= 0) {
+        continue;
+      }
+
+      const fullCard = await this.projectManager.readCreatureCard(project, cardInfo.category, cardInfo.name);
+      const dangerInfo = fullCard
+        ? this.getCurrentDangerLevel(fullCard, targetChapter)
+        : { dangerLevel: '未知', threatLevel: '未知' };
+
+      matchedCards.push({
+        category: cardInfo.category,
+        name: cardInfo.name,
+        content: cardInfo.content,
+        score,
+        dangerLevel: dangerInfo.dangerLevel,
+        threatLevel: dangerInfo.threatLevel,
+      });
+    }
+
+    return matchedCards
       .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, 'zh-CN'))
       .slice(0, maxCards)
       .map(card => ({
         name: card.name,
         content: card.content,
+        category: card.category,
+        currentDangerLevel: card.dangerLevel,
+        currentThreatLevel: card.threatLevel,
       }));
   }
 }

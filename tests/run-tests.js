@@ -166,6 +166,77 @@ async function main() {
       assert.ok(output.includes('自动更新全局摘要、人物关系、时间线、章节计划'));
     });
 
+    await runTest(results, 'save-chapter auto-syncs summary and project state', async () => {
+      const isolatedRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'novel-writer-save-'));
+      await projectManager.createNewProject('Auto Save', 'Tester', isolatedRoot, 'Test setting');
+      const previousCwd = process.cwd();
+      process.chdir(isolatedRoot);
+
+      try {
+        const beforeProject = await projectManager.loadProject(isolatedRoot);
+        const beforeGlobalSummary = await projectManager.readGlobalSummary(beforeProject);
+
+        const output = await captureConsole(async () => {
+          await handler({
+            command: 'save-chapter',
+            args: ['1', 'Pass'],
+            text: '# Chapter 1 Pass\n\nLin Yuan encountered \u706b\u7130\u9f20 at the mountain pass.\n\n\u706b\u7130\u9f20 burst out of the grass and forced everyone back.\n',
+          });
+        });
+
+        const project = await projectManager.loadProject(isolatedRoot);
+        const chapter = projectManager.getChapter(project, 1);
+        const chapterSummary = await projectManager.readChapterSummary(chapter);
+        const globalSummary = await projectManager.readGlobalSummary(project);
+
+        assert.ok(chapterSummary.trim().length > 0, 'save-chapter should auto-generate a summary');
+        assert.notEqual(globalSummary, beforeGlobalSummary, 'save-chapter should auto-sync global summary');
+        assert.ok(output.includes('\u6458\u8981\u5df2\u81ea\u52a8\u751f\u6210\u5e76\u540c\u6b65'), 'output should mention auto-sync');
+      } finally {
+        process.chdir(previousCwd);
+      }
+    });
+
+    await runTest(results, 'creature extraction ignores noisy non-creature phrases', async () => {
+      const isolatedRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'novel-writer-creature-'));
+      await projectManager.createNewProject('Creature Filter', 'Tester', isolatedRoot, 'Test setting');
+      const previousCwd = process.cwd();
+      process.chdir(isolatedRoot);
+
+      try {
+        const project = await projectManager.loadProject(isolatedRoot);
+        await projectManager.saveChapter(
+          project,
+          1,
+          'Noise Check',
+          '\u6797\u6e0a\u5b89\u6392\u5b69\u5b50\u8eb2\u5f00\uff0c\u6309\u4f4f\u77f3\u95e8\uff0c\u770b\u89c1\u4e86\u9e1f\u86cb\u3002\u968f\u540e\u706b\u7130\u9f20\u4ece\u8349\u4e1b\u7a9c\u51fa\u3002'
+        );
+        await projectManager.saveProject(project);
+
+        await captureConsole(async () => {
+          await handler({
+            command: 'update-summary-done',
+            args: ['1'],
+            text: '\u6797\u6e0a\u5b89\u6392\u5b69\u5b50\u8eb2\u907f\u5371\u9669\uff0c\u6309\u4f4f\u77f3\u95e8\u65f6\u770b\u89c1\u4e86\u9e1f\u86cb\u6eda\u843d\uff0c\u968f\u540e\u706b\u7130\u9f20\u4ece\u8349\u4e1b\u7a9c\u51fa\u3002',
+          });
+        });
+
+        const reloaded = await projectManager.loadProject(isolatedRoot);
+        const creatureCards = await projectManager.readAllCreatureCards(reloaded);
+        const creatureNames = creatureCards.map(card => card.name);
+        const fireMouse = await projectManager.findCreatureCard(reloaded, '\u706b\u7130\u9f20');
+
+        assert.ok(creatureNames.includes('\u706b\u7130\u9f20'), 'should keep the real creature name');
+        assert.ok(!creatureNames.includes('\u5b89\u6392\u5b69\u5b50'), 'should not treat action phrases as creatures');
+        assert.ok(!creatureNames.includes('\u6309\u4f4f'), 'should not treat verbs as creatures');
+        assert.ok(!creatureNames.includes('\u9e1f\u86cb'), 'should not treat eggs as creatures');
+        assert.ok(!creatureNames.some(name => name.includes('\u968f\u540e')), 'should not keep narrative adverbs in creature names');
+        assert.ok(fireMouse && fireMouse.card.chapterRecords.length > 0, 'creature cards should record chapter updates');
+      } finally {
+        process.chdir(previousCwd);
+      }
+    });
+
     await runTest(results, 'context assembler excludes unrelated character cards', async () => {
       const project = await projectManager.loadProject(tempRoot);
       await projectManager.saveCharacterCard(project, '张三', '张三角色卡');
@@ -180,6 +251,7 @@ async function main() {
       project.config.maxContextTokens = 600;
       project.config.maxRecentFullChapters = 2;
       project.config.maxRecentChapterSummaries = 2;
+      project.config.maxCreatureCards = 0;
 
       await projectManager.saveChapterSummary(project.chapters[0], '第一章摘要'.repeat(60));
       await projectManager.saveChapter(project, 2, '长路', '第二章正文'.repeat(800));
@@ -212,6 +284,164 @@ async function main() {
       assert.ok(output.includes('阶段复盘'));
       assert.ok(!output.includes('{resolvedStart}'));
       assert.ok(!output.includes('{chapter.number}'));
+    });
+
+    // ========== 生物卡片系统测试 ==========
+
+    await runTest(results, 'create and read creature card', async () => {
+      const project = await projectManager.loadProject('d:/小说/小说管理/墟烬之主');
+      const card = projectManager.buildDefaultCreatureCard('火焰鼠', '野兽', '第1章', '低');
+      card.appearance.size = '小型';
+      card.appearance.features = '通体火红皮毛';
+      card.abilities.attack = '啃咬';
+      card.abilities.weakness = '怕水';
+
+      const filePath = await projectManager.saveCreatureCardFromObject(project, '野兽', '火焰鼠', card);
+      assert.ok(fs.existsSync(filePath));
+
+      const readCard = await projectManager.readCreatureCard(project, '野兽', '火焰鼠');
+      assert.ok(readCard !== null);
+      assert.equal(readCard.name, '火焰鼠');
+      assert.equal(readCard.category, '野兽');
+      assert.equal(readCard.baseDangerLevel, '低');
+      assert.equal(readCard.appearance.size, '小型');
+      assert.equal(readCard.abilities.weakness, '怕水');
+    });
+
+    await runTest(results, 'creature card category management', async () => {
+      const project = await projectManager.loadProject('d:/小说/小说管理/墟烬之主');
+
+      const categories = await projectManager.readCreatureCategories(project);
+      assert.ok(categories.length > 0, '应该有生物分类目录');
+      assert.ok(categories.includes('野兽'), '应该有野兽分类');
+
+      await projectManager.saveCreatureCard(project, '毒蛇', '鳞类', '# 毒蛇\n描述', '中');
+      const cards = await projectManager.readCreatureCards(project, '鳞类');
+      assert.ok(cards.length > 0, '鳞类应该有生物卡片');
+      const snakeCard = cards.find(c => c.name === '毒蛇');
+      assert.ok(snakeCard, '应该找到毒蛇卡片');
+    });
+
+    await runTest(results, 'plant-like names fall into other creature category', async () => {
+      const isolatedRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'novel-writer-plant-'));
+      await projectManager.createNewProject('Plant Category', 'Tester', isolatedRoot, 'Test setting');
+      const previousCwd = process.cwd();
+      process.chdir(isolatedRoot);
+
+      try {
+        const project = await projectManager.loadProject(isolatedRoot);
+        await projectManager.saveChapter(
+          project,
+          1,
+          'Forest',
+          '\u6797\u6e0a\u5728\u5c71\u95f4\u770b\u89c1\u4e03\u661f\u8349\u53d1\u5149\uff0c\u65c1\u8fb9\u8001\u69d0\u6811\u76d8\u6839\u9519\u8282\u3002'
+        );
+        await projectManager.saveProject(project);
+
+        await captureConsole(async () => {
+          await handler({
+            command: 'update-summary-done',
+            args: ['1'],
+            text: '\u672c\u7ae0\u4e2d\u51fa\u73b0\u4e03\u661f\u8349\u4e0e\u8001\u69d0\u6811\uff0c\u4e24\u8005\u90fd\u5c5e\u4e8e\u690d\u7269\u690d\u682a\u7c7b\u7d20\u6750\u3002',
+          });
+        });
+
+        const reloaded = await projectManager.loadProject(isolatedRoot);
+        const qixingcao = await projectManager.findCreatureCard(reloaded, '\u4e03\u661f\u8349');
+        const huaishu = await projectManager.findCreatureCard(reloaded, '\u8001\u69d0\u6811');
+
+        assert.ok(qixingcao, 'should create a card for ???');
+        assert.ok(huaishu, 'should create a card for ???');
+        assert.equal(qixingcao.category, '\u5176\u4ed6');
+        assert.equal(huaishu.category, '\u5176\u4ed6');
+      } finally {
+        process.chdir(previousCwd);
+      }
+    });
+
+    await runTest(results, 'creature danger level update', async () => {
+      const project = await projectManager.loadProject('d:/小说/小说管理/墟烬之主');
+
+      await projectManager.updateCreatureDangerLevel(
+        project,
+        '野兽',
+        '火焰鼠',
+        2,
+        '中',
+        '危险生物',
+        '林渊受伤',
+        '遭遇新威胁'
+      );
+
+      const card = await projectManager.readCreatureCard(project, '野兽', '火焰鼠');
+      assert.ok(card !== null);
+      assert.ok(card.dangerLevelHistory.length > 0, '应该有危险等级历史记录');
+
+      const chapter2Entry = card.dangerLevelHistory.find(h => h.chapterNumber === 2);
+      assert.ok(chapter2Entry, '应该有第2章的记录');
+      assert.equal(chapter2Entry.dangerLevel, '中');
+      assert.equal(chapter2Entry.threatLevel, '危险生物');
+      assert.equal(chapter2Entry.protagonistStatus, '林渊受伤');
+    });
+
+    await runTest(results, 'context assembler includes creature cards', async () => {
+      const project = await projectManager.loadProject('d:/小说/小说管理/墟烬之主');
+
+      const card = projectManager.buildDefaultCreatureCard('林渊', '神话人仙', '第1章', '中');
+      card.abilities.attack = '神力';
+      await projectManager.saveCreatureCardFromObject(project, '神话人仙', '林渊', card);
+
+      const fireMouseCard = projectManager.buildDefaultCreatureCard('火焰鼠', '野兽', '第1章', '低');
+      fireMouseCard.appearance.size = '小型';
+      fireMouseCard.abilities.attack = '啃咬';
+      await projectManager.saveCreatureCardFromObject(project, '野兽', '火焰鼠', fireMouseCard);
+
+      const context = await contextAssembler.assembleContext(
+        project,
+        2,
+        '\u6797\u6e0a\u9047\u5230\u706b\u7130\u9f20',
+        { maxContextTokens: 20000, maxCreatureCards: 4 }
+      );
+
+      assert.ok(Array.isArray(context.creatureCards), 'creatureCards 应该是数组');
+      assert.ok(context.creatureCards.length >= 2, '应该有至少2张生物卡片被选中，当前: ' + context.creatureCards.length);
+
+      const creatureCardNames = context.creatureCards.map(c => c.name);
+      assert.ok(creatureCardNames.includes('火焰鼠'), '上下文应该包含火焰鼠生物卡片，当前卡片: ' + creatureCardNames.join(', '));
+      assert.ok(creatureCardNames.includes('林渊'), '上下文应该包含林渊生物卡片');
+    });
+
+    await runTest(results, 'creature danger level history records', async () => {
+      const project = await projectManager.loadProject('d:/小说/小说管理/墟烬之主');
+
+      await projectManager.updateCreatureDangerLevel(
+        project,
+        '野兽',
+        '火焰鼠',
+        3,
+        '高',
+        '致命威胁',
+        '林渊中毒',
+        '火焰鼠变异'
+      );
+
+      const card = await projectManager.readCreatureCard(project, '野兽', '火焰鼠');
+      assert.ok(card !== null);
+      assert.ok(card.dangerLevelHistory.length >= 2, '应该有至少2条危险等级历史');
+
+      const chapter3Entry = card.dangerLevelHistory.find(h => h.chapterNumber === 3);
+      assert.ok(chapter3Entry, '应该有第3章的记录');
+      assert.equal(chapter3Entry.dangerLevel, '高');
+      assert.equal(chapter3Entry.threatLevel, '致命威胁');
+      assert.equal(chapter3Entry.note, '火焰鼠变异');
+
+      const sortedHistory = card.dangerLevelHistory;
+      for (let i = 1; i < sortedHistory.length; i++) {
+        assert.ok(
+          sortedHistory[i].chapterNumber >= sortedHistory[i - 1].chapterNumber,
+          '危险等级历史应该按章节号排序'
+        );
+      }
     });
   } finally {
     process.chdir(originalCwd);

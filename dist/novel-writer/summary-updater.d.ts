@@ -58,6 +58,22 @@ export declare class SummaryUpdater {
      */
     buildNextChapterPlanningPrompt(targetChapter: number, globalSummary: string, timeline: string, chapterPlan: string, chapterSummaries: string, userIntent: string): string;
     /**
+     * Build prompt for creature card generation
+     */
+    buildCreatureCardPrompt(creatureName: string, context: string): string;
+    /**
+     * Build prompt for creature summary generation
+     */
+    buildCreatureSummaryPrompt(creatureName: string, creatureCard: string): string;
+    /**
+     * Build prompt for auto-generating new creature card draft
+     */
+    buildAutoCreatureCardPrompt(currentCreatureCards: string, chapterContent: string, newCreatureName?: string): string;
+    /**
+     * Build prompt for danger level assessment
+     */
+    buildDangerLevelUpdatePrompt(creatureName: string, currentCreatureCard: string, newChapterSummary: string): string;
+    /**
      * Check if global summary needs compression
      */
     needsCompression(summary: string, maxTokens: number): boolean;
